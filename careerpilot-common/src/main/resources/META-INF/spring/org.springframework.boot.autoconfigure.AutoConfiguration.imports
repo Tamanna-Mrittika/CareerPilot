@@ -1,0 +1,2 @@
+com.careerpilot.common.autoconfigure.CommonWebAutoConfiguration
+com.careerpilot.common.autoconfigure.CommonSecurityAutoConfiguration

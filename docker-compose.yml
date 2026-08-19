@@ -1,0 +1,358 @@
+# CareerPilot -- full system, one command.
+#
+#   ./mvnw package -DskipTests && docker compose up -d --build
+#
+# Port policy: among the APPLICATION services, only api-gateway publishes a host port.
+# identity/profile/resume/job/matching are reachable solely on the internal network, so
+# the gateway really is the whole attack surface. The observability UIs and Postgres are
+# published too -- that is a deliberate development/demo convenience, not the production
+# posture, and is called out here so the distinction is not mistaken for sloppiness.
+#
+# Memory: seven JVMs plus the observability stack is heavy for a laptop. Each service is
+# capped so that one misbehaving process cannot starve the rest.
+
+name: careerpilot
+
+x-service-defaults: &service-defaults
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  networks: [careerpilot]
+  mem_limit: 512m
+
+x-service-env: &service-env
+  SPRING_PROFILES_ACTIVE: docker
+  EUREKA_URL: http://discovery-server:8761/eureka/
+  ZIPKIN_URL: http://zipkin:9411/api/v2/spans
+  DB_HOST: postgres
+  DB_PORT: 5432
+  DB_NAME: careerpilot
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  JWKS_URI: http://identity-service:8081/.well-known/jwks.json
+
+services:
+
+  # ===========================================================================
+  # Infrastructure
+  # ===========================================================================
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: careerpilot-postgres
+    environment:
+      POSTGRES_DB: careerpilot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      # Published so the schema-isolation check in the README can be run from the host.
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs once, on first initialisation of an empty data volume. If you change init.sql
+      # you must `docker compose down -v` for it to take effect again.
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d careerpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [careerpilot]
+    mem_limit: 512m
+
+  redis:
+    image: redis:7-alpine
+    container_name: careerpilot-redis
+    # Not published: nothing outside the compose network has any business talking to it.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [careerpilot]
+    mem_limit: 256m
+
+  minio:
+    image: minio/minio:latest
+    container_name: careerpilot-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-careerpilot}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-careerpilot123}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [careerpilot]
+    mem_limit: 384m
+
+  # --- observability profile -------------------------------------------------
+  # Zipkin, Prometheus and Grafana are ~1.3 GB of RAM that day-to-day development does
+  # not need. They are opt-in:
+  #     docker compose up -d                            # core only
+  #     docker compose --profile observability up -d    # + tracing and metrics
+  # Note: `docker compose down` only stops what its profiles select, so tearing the full
+  # stack down needs the flag too (or `docker compose down --remove-orphans`).
+  #
+  # Services keep pointing at ZIPKIN_URL when Zipkin is absent; the reporter fails
+  # quietly and the application is unaffected.
+  zipkin:
+    image: openzipkin/zipkin:latest
+    container_name: careerpilot-zipkin
+    profiles: [observability]
+    ports:
+      - "9411:9411"
+    environment:
+      STORAGE_TYPE: mem
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9411/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [careerpilot]
+    mem_limit: 512m
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: careerpilot-prometheus
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks: [careerpilot]
+    mem_limit: 384m
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: careerpilot-grafana
+    profiles: [observability]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      # Anonymous viewing keeps the demo moving: no login prompt in front of the audience.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks: [careerpilot]
+    mem_limit: 384m
+
+  # ===========================================================================
+  # Application services
+  # ===========================================================================
+
+  discovery-server:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: discovery-server
+    container_name: careerpilot-discovery
+    ports:
+      - "8761:8761"   # dashboard; the clearest proof the system is really distributed
+    environment:
+      EUREKA_HOSTNAME: discovery-server
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8761/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  identity-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: identity-service
+    container_name: careerpilot-identity
+    environment:
+      <<: *service-env
+      DB_USER: identity_svc
+      DB_PASSWORD: identity_pw
+      JWT_ISSUER: http://identity-service:8081
+      # Empty -> ephemeral keypair + a loud startup warning, so a fresh clone just runs.
+      # For stable keys across restarts: scripts/generate-keys.sh, then set these to
+      # file:/run/keys/jwt-private.pem and file:/run/keys/jwt-public.pem
+      JWT_PRIVATE_KEY_LOCATION: ${JWT_PRIVATE_KEY_LOCATION:-}
+      JWT_PUBLIC_KEY_LOCATION: ${JWT_PUBLIC_KEY_LOCATION:-}
+    volumes:
+      - ./infra/keys:/run/keys:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  profile-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: profile-service
+    container_name: careerpilot-profile
+    environment:
+      <<: *service-env
+      DB_USER: profile_svc
+      DB_PASSWORD: profile_pw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      # Needs identity's JWKS to validate tokens independently of the gateway.
+      identity-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  resume-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: resume-service
+    container_name: careerpilot-resume
+    environment:
+      <<: *service-env
+      DB_USER: resume_svc
+      DB_PASSWORD: resume_pw
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-careerpilot}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-careerpilot123}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      identity-service:
+        condition: service_healthy
+      # Its skill-taxonomy and IDF caches need something to fetch from at first refresh.
+      profile-service:
+        condition: service_healthy
+      job-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  job-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: job-service
+    container_name: careerpilot-job
+    environment:
+      <<: *service-env
+      DB_USER: job_svc
+      DB_PASSWORD: job_pw
+      # Blank disables Adzuna; the three keyless boards still ingest, so the stack works
+      # with no credentials at all.
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_APP_KEY: ${ADZUNA_APP_KEY:-}
+      ADZUNA_COUNTRY: ${ADZUNA_COUNTRY:-gb}
+      # Without this the /jobs/local (Bangladesh) page has no data source.
+      JSEARCH_API_KEY: ${JSEARCH_API_KEY:-}
+      # The only verified source of Dhaka listings. Without it /jobs/local is empty.
+      APIFY_TOKEN: ${APIFY_TOKEN:-}
+      APIFY_LOCATION: ${APIFY_LOCATION:-Dhaka, Bangladesh}
+      APIFY_MAX_RESULTS: ${APIFY_MAX_RESULTS:-25}
+      DEFAULT_CITY: ${DEFAULT_CITY:-Dhaka}
+      DEFAULT_COUNTRY: ${DEFAULT_COUNTRY:-Bangladesh}
+      INGESTION_CRON: ${INGESTION_CRON:-0 0 */6 * * *}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      identity-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8084/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  api-gateway:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: api-gateway
+    container_name: careerpilot-gateway
+    ports:
+      # The only application port on the host. Kept configurable because 8080 is heavily
+      # contended on Windows dev machines -- override GATEWAY_PORT in .env if something
+      # else claims it. The container side stays 8080 either way, so nothing internal
+      # depends on the host mapping.
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      <<: *service-env
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    depends_on:
+      redis:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      # Waits for identity so the first JWKS fetch cannot race a cold start.
+      identity-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+networks:
+  careerpilot:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:

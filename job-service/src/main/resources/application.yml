@@ -1,0 +1,225 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: job-service
+
+  # WebClient is used for outbound calls only; the service itself serves servlet HTTP.
+  main:
+    web-application-type: servlet
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:careerpilot}?currentSchema=job
+    username: ${DB_USER:job_svc}
+    password: ${DB_PASSWORD:job_pw}
+    hikari:
+      maximum-pool-size: 10
+      pool-name: job-pool
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: job
+        jdbc:
+          time_zone: UTC
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+        default_batch_fetch_size: 50
+
+  flyway:
+    enabled: true
+    schemas: job
+    default-schema: job
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 3s
+
+  cache:
+    type: redis
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+
+careerpilot:
+  search:
+    # Home market for the /jobs/local page when the caller supplies no location.
+    default-city: ${DEFAULT_CITY:Dhaka}
+    # Left empty deliberately: providers encode country inconsistently (JSearch returns
+    # "BD", Adzuna returns "Bangladesh"), so filtering on it by default would silently
+    # exclude everything. City matching is the reliable filter; country stays opt-in.
+    default-country: ${DEFAULT_COUNTRY:}
+
+  ingestion:
+    # Every 6 hours. Set by provider terms, not preference: Remotive advises <= ~4 requests
+    # a day and blocks excessive polling; Adzuna's free tier is ~1,000 calls a MONTH.
+    cron: ${INGESTION_CRON:0 0 */6 * * *}
+
+  providers:
+    remotive-url: https://remotive.com/api/remote-jobs
+    arbeitnow-url: https://www.arbeitnow.com/api/job-board-api
+    remote-ok-url: https://remoteok.com/api
+    adzuna-base-url: https://api.adzuna.com/v1/api/jobs
+    # Blank disables Adzuna entirely; the three keyless boards still ingest.
+    adzuna-app-id: ${ADZUNA_APP_ID:}
+    adzuna-app-key: ${ADZUNA_APP_KEY:}
+    adzuna-country: ${ADZUNA_COUNTRY:gb}
+    adzuna-pages: 1
+
+    # JSearch (Google for Jobs) is the ONLY configured source that can return Bangladesh
+    # listings -- Adzuna's 16 countries exclude BD, and Remotive/RemoteOK/Arbeitnow are
+    # remote-only or EU-focused. Without this key the /jobs/local page will be empty.
+    # Free key, no card: https://www.openwebninja.com/api/jsearch
+    jsearch-base-url: https://api.openwebninja.com/jsearch/search-v2
+    jsearch-api-key: ${JSEARCH_API_KEY:}
+    # One API call per query and only 200 calls a MONTH on the free tier, so keep this short.
+    jsearch-queries:
+      - software engineer in Dhaka, Bangladesh
+      - backend developer in Dhaka, Bangladesh
+
+    # Apify job-board-scraper. VERIFIED as the only source returning real Dhaka jobs.
+    # Costs ~$0.003/job against Apify's $5/month free credit (~1,600 jobs/month), which is
+    # why ingestion is scheduled with a small maxResults rather than run per user search.
+    # Note: the actor's own bdjobs and google boards return nothing, so linkedin is the
+    # board that works -- Bdjobs.com content still arrives via its LinkedIn cross-posts.
+    apify-token: ${APIFY_TOKEN:}
+    apify-actor-id: openclawai~job-board-scraper
+    apify-location: ${APIFY_LOCATION:Dhaka, Bangladesh}
+    apify-sites:
+      - linkedin
+    apify-search-terms:
+      - software engineer
+      - backend developer
+    # 25 per term. Two terms x 25 = 50 jobs/run; one run a day stays inside the $5 budget.
+    apify-max-results: ${APIFY_MAX_RESULTS:25}
+    # Actor runs take minutes; the 20s shared timeout would abort every run.
+    apify-timeout: 5m
+
+    timeout: 20s
+    # Remotive and RemoteOK both reject or throttle requests with no User-Agent.
+    user-agent: CareerPilot/1.0 (CSE4636 academic project)
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        # Percentage-based so a single blip does not trip the breaker, but a provider that
+        # is genuinely down is isolated quickly.
+        failure-rate-threshold: 50
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 6
+        minimum-number-of-calls: 3
+        wait-duration-in-open-state: 60s
+        permitted-number-of-calls-in-half-open-state: 2
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+    instances:
+      remotive:
+        base-config: default
+      arbeitnow:
+        base-config: default
+      remoteok:
+        base-config: default
+      jsearch:
+        base-config: default
+        # Same reasoning as Adzuna: a hard monthly quota, so back off sooner.
+        failure-rate-threshold: 40
+        wait-duration-in-open-state: 300s
+      apify:
+        base-config: default
+        # Paid per result against a $5/month cap, so isolate it fast and stay open long.
+        failure-rate-threshold: 40
+        wait-duration-in-open-state: 600s
+      adzuna:
+        # Stricter: every retry against Adzuna spends finite monthly quota, so back off
+        # sooner and stay open longer than for the free boards.
+        base-config: default
+        failure-rate-threshold: 40
+        wait-duration-in-open-state: 300s
+
+  retry:
+    configs:
+      default:
+        max-attempts: 3
+        wait-duration: 2s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.reactive.function.client.WebClientRequestException
+          - org.springframework.web.reactive.function.client.WebClientResponseException$ServiceUnavailable
+          - org.springframework.web.reactive.function.client.WebClientResponseException$GatewayTimeout
+          - org.springframework.web.reactive.function.client.WebClientResponseException$TooManyRequests
+    instances:
+      remotive:
+        base-config: default
+      arbeitnow:
+        base-config: default
+      remoteok:
+        base-config: default
+      jsearch:
+        # See adzuna below: retrying a quota-limited API wastes the very budget that is
+        # most likely the reason it failed.
+        max-attempts: 1
+      apify:
+        # Never retry: each attempt is billed per result, so a retry spends real money on
+        # a call that already failed.
+        max-attempts: 1
+      adzuna:
+        # One attempt only. Retrying a quota-limited API multiplies quota burn for a call
+        # that is most likely failing because the quota is already exhausted.
+        max-attempts: 1
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics,circuitbreakers,circuitbreakerevents
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  health:
+    circuitbreakers:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_URL:http://localhost:9411/api/v2/spans}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-},%X{correlationId:-}]"
+  level:
+    com.careerpilot: INFO

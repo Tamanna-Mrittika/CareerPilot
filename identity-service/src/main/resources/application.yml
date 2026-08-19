@@ -1,0 +1,83 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: identity-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:careerpilot}?currentSchema=identity
+    username: ${DB_USER:identity_svc}
+    password: ${DB_PASSWORD:identity_pw}
+    hikari:
+      maximum-pool-size: 10
+      pool-name: identity-pool
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. Hibernate validates against it and never mutates it --
+      # ddl-auto: update in a multi-service system is how schemas silently diverge.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: identity
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    schemas: identity
+    default-schema: identity
+    locations: classpath:db/migration
+
+careerpilot:
+  jwt:
+    issuer: ${JWT_ISSUER:http://identity-service:8081}
+    audience: ${JWT_AUDIENCE:careerpilot-api}
+    access-token-ttl: 15m
+    refresh-token-ttl: 14d
+    # Blank in local dev -> ephemeral keypair with a startup warning.
+    # Compose mounts real PEMs and sets these.
+    private-key-location: ${JWT_PRIVATE_KEY_LOCATION:}
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      # Sample everything: this is a demo system where a missing trace is worse than the overhead.
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_URL:http://localhost:9411/api/v2/spans}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-},%X{correlationId:-}]"
+  level:
+    com.careerpilot: INFO

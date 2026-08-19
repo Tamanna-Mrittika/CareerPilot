@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+  external_labels:
+    system: careerpilot
+
+scrape_configs:
+  # Static targets rather than service discovery: the compose topology is fixed and known,
+  # and a static list is far easier to read in a viva than a relabelling config.
+  - job_name: careerpilot-services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['api-gateway:8080']
+        labels: { service: api-gateway }
+      - targets: ['identity-service:8081']
+        labels: { service: identity-service }
+      - targets: ['profile-service:8082']
+        labels: { service: profile-service }
+      - targets: ['resume-service:8083']
+        labels: { service: resume-service }
+      - targets: ['job-service:8084']
+        labels: { service: job-service }
+      - targets: ['matching-service:8085']
+        labels: { service: matching-service }
+      - targets: ['discovery-server:8761']
+        labels: { service: discovery-server }
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

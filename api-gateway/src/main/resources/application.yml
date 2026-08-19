@@ -1,0 +1,145 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Fetched and cached on first use. No shared secret exists anywhere in the system.
+          jwk-set-uri: ${JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+
+  cloud:
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              # Explicit routes only. Auto-routing every registered service would silently
+              # publish internal endpoints the moment a new service registers.
+              enabled: false
+
+          default-filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@principalKeyResolver}"
+                # Sustained 20 req/s with headroom for bursts of 40 -- comfortable for a
+                # human, restrictive for a script.
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                redis-rate-limiter.requestedTokens: 1
+
+          routes:
+            # ---- identity ----------------------------------------------------------
+            # Tighter bucket on auth: these are the endpoints worth brute-forcing, and the
+            # limiter keys on IP here because callers are anonymous by definition.
+            - id: identity-auth
+              uri: lb://identity-service
+              predicates:
+                - Path=/api/v1/auth/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@principalKeyResolver}"
+                    redis-rate-limiter.replenishRate: 3
+                    redis-rate-limiter.burstCapacity: 8
+
+            # ---- profile -----------------------------------------------------------
+            - id: profile-service
+              uri: lb://profile-service
+              predicates:
+                - Path=/api/v1/profiles/**,/api/v1/skills/**,/api/v1/cover-letters/**
+
+            # ---- resume ------------------------------------------------------------
+            # Uploads are slow and CPU-bound downstream, so this route gets a longer
+            # response timeout and a much smaller bucket than ordinary reads.
+            - id: resume-service
+              uri: lb://resume-service
+              predicates:
+                - Path=/api/v1/resumes/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@principalKeyResolver}"
+                    redis-rate-limiter.replenishRate: 1
+                    redis-rate-limiter.burstCapacity: 5
+
+            # ---- jobs --------------------------------------------------------------
+            - id: job-service
+              uri: lb://job-service
+              predicates:
+                - Path=/api/v1/jobs/**
+
+            # ---- matching ----------------------------------------------------------
+            - id: matching-service
+              uri: lb://matching-service
+              predicates:
+                - Path=/api/v1/matches/**,/api/v1/skill-gap/**
+
+          httpclient:
+            connect-timeout: 2000
+            response-timeout: 10s
+
+careerpilot:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+# Aggregates every service's OpenAPI document into one Swagger UI at the gateway, so the
+# whole system's contract is browsable from a single page.
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    urls:
+      - name: identity-service
+        url: /api/v1/auth/v3/api-docs
+      - name: profile-service
+        url: /api/v1/profiles/v3/api-docs
+      - name: resume-service
+        url: /api/v1/resumes/v3/api-docs
+      - name: job-service
+        url: /api/v1/jobs/v3/api-docs
+      - name: matching-service
+        url: /api/v1/matches/v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics,gateway
+  endpoint:
+    health:
+      probes:
+        enabled: true
+    gateway:
+      access: read_only
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_URL:http://localhost:9411/api/v2/spans}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-},%X{correlationId:-}]"
+  level:
+    com.careerpilot: INFO

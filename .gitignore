@@ -1,0 +1,27 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/wrapper/maven-wrapper.jar
+
+*.class
+*.jar
+*.war
+*.log
+
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+
+node_modules/
+dist/
+.vite/
+
+.env
+*.local
+
+# RSA keypair for JWT signing is generated per-environment, never committed
+infra/keys/*.pem

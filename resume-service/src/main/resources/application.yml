@@ -1,0 +1,93 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: resume-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:careerpilot}?currentSchema=resume
+    username: ${DB_USER:resume_svc}
+    password: ${DB_PASSWORD:resume_pw}
+    hikari:
+      maximum-pool-size: 10
+      pool-name: resume-pool
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: resume
+        jdbc:
+          time_zone: UTC
+        # Batch-fetches the child collections (skills/checks/suggestions) instead of a
+        # multi-bag join-fetch -- see profile-service's ProfileRepository for why the
+        # obvious @EntityGraph approach throws MultipleBagFetchException here too.
+        default_batch_fetch_size: 30
+
+  flyway:
+    enabled: true
+    schemas: resume
+    default-schema: resume
+    locations: classpath:db/migration
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+
+  servlet:
+    multipart:
+      # Above the 5 MB application-level check in ResumeUploadService, so that check --
+      # not a silent container-level truncation -- is what produces the error message.
+      max-file-size: 8MB
+      max-request-size: 8MB
+
+careerpilot:
+  storage:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:careerpilot}
+    secret-key: ${MINIO_SECRET_KEY:careerpilot123}
+    bucket: resumes
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_URL:http://localhost:9411/api/v2/spans}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-},%X{correlationId:-}]"
+  level:
+    com.careerpilot: INFO

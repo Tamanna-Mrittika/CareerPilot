@@ -1,0 +1,13 @@
+Generated JWT signing keys land here (git-ignored).
+
+Run scripts/generate-keys.sh (or .ps1 on Windows) to create jwt-private.pem and
+jwt-public.pem, then set these in .env to get keys that survive a restart:
+
+    JWT_PRIVATE_KEY_LOCATION=file:/run/keys/jwt-private.pem
+    JWT_PUBLIC_KEY_LOCATION=file:/run/keys/jwt-public.pem
+
+Leaving them unset is fine for development: identity-service generates an ephemeral
+keypair at startup and warns that tokens will not survive a restart.
+
+This file exists so the directory is present for the compose bind mount even when no
+keys have been generated yet.
