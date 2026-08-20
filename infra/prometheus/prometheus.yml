@@ -22,6 +22,8 @@ scrape_configs:
         labels: { service: job-service }
       - targets: ['matching-service:8085']
         labels: { service: matching-service }
+      - targets: ['tracker-service:8086']
+        labels: { service: tracker-service }
       - targets: ['discovery-server:8761']
         labels: { service: discovery-server }
 

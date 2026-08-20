@@ -49,6 +49,26 @@ public class JobIngestionService {
     private final CacheManager cacheManager;
     private final ProviderProperties properties;
 
+    /**
+     * Registers every provider's counters at zero on startup.
+     *
+     * <p>Micrometer only creates a counter the first time it is incremented, so before the
+     * first ingestion run these series simply do not exist in Prometheus -- and a Grafana
+     * panel querying them renders "No data", which is indistinguishable from the scrape
+     * being broken. Pre-registering means an idle system reports a truthful 0 instead of
+     * a missing metric.
+     */
+    @jakarta.annotation.PostConstruct
+    void preRegisterMetrics() {
+        for (JobProvider provider : providers) {
+            String name = provider.source().name().toLowerCase();
+            meters.counter("careerpilot.jobs.fetched", "provider", name);
+            meters.counter("careerpilot.provider.failures", "provider", name);
+        }
+        meters.counter("careerpilot.jobs.created");
+        meters.counter("careerpilot.jobs.duplicates");
+    }
+
     public record IngestionReport(
             Map<String, Integer> fetchedByProvider,
             Map<String, String> failedProviders,

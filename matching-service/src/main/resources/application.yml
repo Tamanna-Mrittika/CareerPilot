@@ -60,6 +60,14 @@ management:
   metrics:
     tags:
       application: ${spring.application.name}
+    distribution:
+      # Publishes histogram buckets for HTTP timings. Without these Prometheus only gets
+      # count/sum/max, and histogram_quantile() cannot compute p95 -- the latency panel
+      # would silently render "No data" rather than fail loudly.
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 50ms,100ms,250ms,500ms,1s,2s
   tracing:
     sampling:
       probability: 1.0
