@@ -131,8 +131,8 @@ actually exists; listing a missing directory fails the reactor before compiling 
 | job-service | built, running | 8084 (internal) |
 | resume-service | built, running | 8083 (internal) |
 | matching-service | built, running | 8085 (internal) |
-| tracker-service | **not started — next task** (low priority, see cut list) | — |
-| frontend | not started | — |
+| tracker-service | built, running | 8086 (internal) |
+| frontend | **not started — next task** | — |
 
 ### Request path and trust boundary
 
@@ -494,6 +494,43 @@ for service discovery, so a cold start of the whole stack reliably loses the fir
 `JobCorpusIdfCache` now have a `retryUntilLoaded()` on a 90s `@Scheduled` that no-ops once
 loaded. Without it the caches sat empty until the next 6-hourly tick and every score in
 that window silently fell back to unweighted -- wrong answers, no error.
+
+### `tracker-service` — BUILT, port 8086
+
+Kanban application tracker. Two things here carry the marks, not the CRUD:
+
+**1. Status is a real state machine, not a string.** Legal transitions live on the
+`ApplicationStatus` enum itself so rules cannot drift from the states they govern. An
+illegal move returns 409 naming both states and what *was* allowed
+(`"Cannot move an application from APPLIED to WISHLIST. Allowed from APPLIED: [...]"`).
+`REJECTED`/`WITHDRAWN` are terminal. Every card exposes `allowedTransitions` so the UI can
+grey out illegal drop targets, and `GET /api/v1/applications/statuses` returns the whole
+machine so a client never hardcodes the rules. Every change is recorded as an immutable
+`ApplicationEvent` tagged MANUAL / EMAIL_WEBHOOK / INITIAL -- when a card moves on its own
+the user can see which email did it.
+
+**2. The email webhook is HMAC-authenticated, not JWT.** Its caller is a mail provider with
+no user session, so `POST /api/v1/webhooks/email` is permitted through Spring Security
+(and through the gateway's `PUBLIC_PATHS`) and authenticated instead by an
+`X-Signature-256: sha256=<hex>` HMAC-SHA256 over the **raw request body**. Non-obvious bits:
+- The controller takes `byte[]`, not a bound object -- re-serialising parsed JSON changes
+  whitespace/key order and no signature would ever verify.
+- Comparison uses `MessageDigest.isEqual` (constant-time). `equals` returns early on the
+  first differing byte, leaking how much of a guessed signature was right.
+- **Fails closed**: a blank `WEBHOOK_SECRET` rejects everything rather than accepting
+  unsigned input.
+- `/email/simulate` and `/email/sign` are ADMIN+JWT only, so a demo never needs the real
+  endpoint weakened.
+
+**Classifier ordering is load-bearing.** `EmailClassifier` checks rejection patterns
+**before** interview ones, because rejection emails routinely contain interview vocabulary
+("thank you for interviewing with us, however..."). Checking interview first misreads most
+rejections as progress -- the most damaging error possible here. Verified: an email saying
+both correctly resolves to REJECTED. No confident match returns empty and moves nothing; a
+wrong automatic move costs more trust than an absent one.
+
+Webhook responses are always 200 with a description, even when nothing matched -- returning
+an error for "no card moved" makes a mail provider retry the same message forever.
 
 ### Cut list, in order, if the timeline gets tight
 

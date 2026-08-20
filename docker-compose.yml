@@ -346,6 +346,35 @@ services:
       retries: 20
       start_period: 60s
 
+  tracker-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: tracker-service
+    container_name: careerpilot-tracker
+    environment:
+      <<: *service-env
+      DB_USER: tracker_svc
+      DB_PASSWORD: tracker_pw
+      # Blank makes the email webhook reject every request (fails closed) rather than
+      # accepting unsigned input. Set it to enable inbound email auto-transitions.
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      identity-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8086/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
   api-gateway:
     <<: *service-defaults
     build:

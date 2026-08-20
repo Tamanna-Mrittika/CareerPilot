@@ -24,6 +24,10 @@ public class GatewaySecurityConfig {
             "/api/v1/auth/register",
             "/api/v1/auth/login",
             "/api/v1/auth/refresh",
+            // Machine-to-machine: a mail provider cannot present a JWT. Authenticated
+            // downstream by HMAC signature over the raw body, which fails closed, so this
+            // is not an unauthenticated hole -- just a different authentication layer.
+            "/api/v1/webhooks/email",
             "/actuator/health/**",
             "/actuator/prometheus",
             "/actuator/info",

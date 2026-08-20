@@ -32,6 +32,7 @@
         <module>resume-service</module>
         <module>job-service</module>
         <module>matching-service</module>
+        <module>tracker-service</module>
     </modules>
 
     <properties>

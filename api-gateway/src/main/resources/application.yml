@@ -85,6 +85,15 @@ spring:
               predicates:
                 - Path=/api/v1/matches/**,/api/v1/skill-gap/**
 
+            # ---- tracker -----------------------------------------------------------
+            # The webhook path is included here but is NOT JWT-protected downstream: it is
+            # authenticated by HMAC signature instead, because the caller is a mail
+            # provider with no user session. See tracker-service's SecurityConfig.
+            - id: tracker-service
+              uri: lb://tracker-service
+              predicates:
+                - Path=/api/v1/applications/**,/api/v1/webhooks/**
+
           httpclient:
             connect-timeout: 2000
             response-timeout: 10s
@@ -116,6 +125,8 @@ springdoc:
         url: /api/v1/jobs/v3/api-docs
       - name: matching-service
         url: /api/v1/matches/v3/api-docs
+      - name: tracker-service
+        url: /api/v1/applications/v3/api-docs
 
 management:
   endpoints:
