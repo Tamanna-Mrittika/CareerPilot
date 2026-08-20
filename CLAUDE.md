@@ -12,7 +12,7 @@ accordingly. Upload a resume → skills extracted → scored against live job po
 explainable fit score. `README.md` has the pitch-level narrative; this file is the
 operational one — read this first when resuming work.
 
-**Not yet a git repository.** Run `git init` when ready to start committing.
+Git repo: https://github.com/Tamanna-Mrittika/CareerPilot (branch `main`).
 
 ## Commands
 
@@ -109,8 +109,8 @@ runs the whole system.
        |                   ^               ^               ^
        |                   +-------+-------+---------------+
        |                           |  API composition + fallbacks
-       |                    matching-service (not started)
-       |                     explainable fit score . skill gap
+       |                    matching-service
+       |                     explainable fit score . skill gap . courses
        v
   Eureka   Postgres (schema-per-service)   Redis   MinIO
   Prometheus . Grafana . Zipkin (opt-in profile)
@@ -130,8 +130,8 @@ actually exists; listing a missing directory fails the reactor before compiling 
 | profile-service | built, running | 8082 (internal) |
 | job-service | built, running | 8084 (internal) |
 | resume-service | built, running | 8083 (internal) |
-| matching-service | **not started — next task** | 8085 (reserved) |
-| tracker-service | not started, low priority (see cut list) | — |
+| matching-service | built, running | 8085 (internal) |
+| tracker-service | **not started — next task** (low priority, see cut list) | — |
 | frontend | not started | — |
 
 ### Request path and trust boundary
@@ -354,6 +354,40 @@ once the proxied response's own header merged on top. Verified: a single Zipkin 
   on every restart, fine for dev). Run `scripts/generate-keys.sh`/`.ps1` and set
   `JWT_PRIVATE_KEY_LOCATION`/`JWT_PUBLIC_KEY_LOCATION` in `.env` for persistent keys.
 
+## Docker Desktop won't start: stuck socket files (recurring on this machine)
+
+Symptom -- Docker Desktop shows:
+
+```
+starting services: initializing <X>: listening on unix://C:/Users/ACER/AppData/Local/...
+remove ...\<something>.sock: The file cannot be accessed by the system.
+```
+
+Cause: Docker's AF_UNIX socket files are left behind after an unclean shutdown. Windows
+cannot delete them individually (`Remove-Item`, `[System.IO.File]::Delete` and `del` all
+fail, and `ls` shows them as `-?????????` with unreadable metadata), and they survive
+reboots. On startup Docker tries to *remove* the pre-existing socket before binding, and
+that removal is what fails.
+
+**This is NOT filesystem corruption** -- an earlier diagnosis in this project wrongly
+concluded that and ran `chkdsk`, which did nothing. Moving the parent *directory* works
+perfectly; only deleting the individual socket files fails. What made it look like
+corruption was Docker Desktop still running and instantly recreating a socket inside the
+freshly made directory.
+
+**Fix** -- kill every Docker process first, or it recreates the sockets while you work,
+then move the offending directory aside, recreate it EMPTY, and start Docker Desktop.
+Two directories have needed this so far; check whichever the error names:
+
+- `C:\Users\ACER\AppData\Local\Docker\run`
+- `C:\Users\ACER\AppData\Local\docker-secrets-engine`
+
+The leftover `*-quarantine-*` / `*-broken-*` folders are zero-byte and harmless.
+
+Also note: Docker Desktop does **not** auto-start after a reboot on this machine, and
+`docker info` *hangs* rather than erroring when it is mid-start or stuck -- poll with
+`timeout 8 docker version` so a stuck daemon cannot block the shell.
+
 ## Housekeeping notes (machine-level, not project-level)
 
 - A WSL distro (`Ubuntu`, unrelated coursework, not `opp_env`) was removed to free disk
@@ -414,14 +448,52 @@ Pipeline (all verified against a real PDF end to end):
   routes public, because resume-service reads both on a background schedule with no user
   context. `POST /api/v1/jobs/ingest` stays ADMIN-only (explicit `HttpMethod.GET` scoping).
 
-### `matching-service` — NEXT TASK, port 8085
+### `matching-service` — BUILT, port 8085
 
-Composes profile-service + job-service. Fit score = weighted blend of **IDF-weighted
-skill overlap** (rare skills count more, computed over the ingested job corpus),
-experience fit, location fit, seniority fit. Response must be **explainable**: matched
-skills, missing skills, per-component contribution breakdown. Missing skills map to a
-Flyway-seeded free-course catalog (freeCodeCamp/Coursera-audit/YouTube) — no external
-runtime dependency for the skill-gap feature.
+Composes profile-service + job-service into ranked, explainable matches. Owns almost no
+data (only the 123-row free-course catalog); fit scores are computed fresh per request,
+never persisted -- both inputs change independently and a stored score would need
+invalidating on every profile edit and every ingestion run.
+
+Endpoints: `/api/v1/matches/local`, `/matches/remote`, `/matches` (ALL),
+`/matches/jobs/{jobId}`, and `/api/v1/skill-gap`.
+
+**Fit score = 4 weighted components**, each returning its own number AND a sentence:
+skills 0.55, experience 0.20, location 0.15, workStyle 0.10.
+
+- **Skills** use rarity weighting from `SkillRarityIndex` (IDF over a 300-job sample of the
+  live corpus), so matching Kubernetes counts for more than matching Git. `JobSkillExtractor`
+  derives each job's implied skills by running the shared taxonomy over its title/tags/
+  description with Aho-Corasick -- postings ship prose, not structured skill lists.
+- **Inapplicable components score `-1`** and are excluded from the weighted average rather
+  than scored 0 or 100 (e.g. location on a remote role genuinely does not apply; scoring it
+  either way would distort remote-vs-local comparisons).
+
+**Non-obvious things already fixed here -- do not reintroduce:**
+- **Unassessable skills are capped, not excluded.** When a posting has no recognisable
+  skills the component is `-1`, but the *overall* score is then capped at 50
+  (`UNASSESSABLE_SKILLS_SCORE_CAP`). Without that cap such jobs scored a clean 100% on
+  experience + workStyle alone and floated to the TOP of the ranking above genuinely good
+  matches. "Could not assess" is not "perfect match".
+- **Skill-gap ranks by demand, per-job gaps rank by rarity** -- deliberately opposite.
+  For "what should I learn next?", a skill 59% of Dhaka postings want beats an exotic one
+  appearing once, even though the exotic one scores higher on any individual match.
+- `CurrentUser.rawToken()` (added to careerpilot-common) forwards the caller's own JWT to
+  profile-service, because `/profiles/me` is user-scoped private data -- unlike the public
+  taxonomy/job reads, which need no token.
+- Course catalog slugs are **validated against profile-service's taxonomy at generation
+  time**. A typo'd slug fails silently at runtime: the gap is still reported, it just
+  recommends nothing, with no error anywhere.
+
+### Cold-start race (bit both matching-service and resume-service)
+
+Caches that load from a peer in `@PostConstruct` can fire before that peer has registered
+with **Eureka** -- compose's `depends_on: service_healthy` waits for the healthcheck, not
+for service discovery, so a cold start of the whole stack reliably loses the first attempt
+(observed: 503 from an unresolved `lb://` host). Both `SkillRarityIndex` and
+`JobCorpusIdfCache` now have a `retryUntilLoaded()` on a 90s `@Scheduled` that no-ops once
+loaded. Without it the caches sat empty until the next 6-hourly tick and every score in
+that window silently fell back to unweighted -- wrong answers, no error.
 
 ### Cut list, in order, if the timeline gets tight
 

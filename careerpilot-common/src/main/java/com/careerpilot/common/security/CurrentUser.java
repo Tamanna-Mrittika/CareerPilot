@@ -48,6 +48,20 @@ public final class CurrentUser {
                 .orElseGet(List::of);
     }
 
+    /**
+     * The raw compact JWS string of the caller's own token, for services that must call a
+     * peer's <em>private</em>, user-scoped endpoint on the caller's behalf -- e.g.
+     * matching-service reading the caller's own profile from profile-service's
+     * {@code GET /api/v1/profiles/me}. Deliberately distinct from the public,
+     * no-auth-needed reads other services use (skill taxonomy, job listings): forwarding
+     * the caller's real token, rather than inventing a service credential, means the
+     * downstream call is authorised as the same user and carries no more trust than the
+     * original request already had.
+     */
+    public static Optional<String> rawToken() {
+        return jwt().map(Jwt::getTokenValue);
+    }
+
     private static Optional<Jwt> jwt() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth != null && auth.getPrincipal() instanceof Jwt token) {

@@ -51,8 +51,26 @@ public class JobCorpusIdfCache {
         refresh();
     }
 
+    /**
+     * Short-interval retry until the first successful load, then it stops doing work.
+     *
+     * <p>{@code @PostConstruct} can run before job-service has registered with Eureka --
+     * compose's {@code depends_on: service_healthy} waits for the healthcheck, not for
+     * service discovery, so a cold start of the whole stack reliably loses the first
+     * attempt (observed: 503 from an unresolved lb:// host). Without this the corpus would
+     * stay empty until the next 6-hourly tick, and every ATS score in that window would
+     * silently weight all terms equally instead of by rarity.
+     */
+    @Scheduled(fixedDelay = 90, initialDelay = 30, timeUnit = TimeUnit.SECONDS)
+    public void retryUntilLoaded() {
+        if (isLoaded()) {
+            return;
+        }
+        refresh();
+    }
+
     /** Every 6 hours -- roughly matching how often job-service's own free-board ingestion runs. */
-    @Scheduled(fixedDelay = 6, initialDelay = 1, timeUnit = TimeUnit.HOURS)
+    @Scheduled(fixedDelay = 6, initialDelay = 6, timeUnit = TimeUnit.HOURS)
     public void refresh() {
         List<String> descriptions = jobServiceClient.sampleDescriptions(SAMPLE_SIZE);
         if (descriptions.isEmpty()) {

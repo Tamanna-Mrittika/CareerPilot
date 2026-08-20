@@ -31,7 +31,7 @@
         <module>profile-service</module>
         <module>resume-service</module>
         <module>job-service</module>
-        <!-- <module>matching-service</module> -->
+        <module>matching-service</module>
     </modules>
 
     <properties>

@@ -315,6 +315,37 @@ services:
       retries: 20
       start_period: 60s
 
+  matching-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MODULE: matching-service
+    container_name: careerpilot-matching
+    environment:
+      <<: *service-env
+      DB_USER: matching_svc
+      DB_PASSWORD: matching_pw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      identity-service:
+        condition: service_healthy
+      # Both peers must be up: it composes their data and builds its caches from them.
+      profile-service:
+        condition: service_healthy
+      job-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8085/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
   api-gateway:
     <<: *service-defaults
     build:
