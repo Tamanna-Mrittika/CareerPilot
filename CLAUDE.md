@@ -40,8 +40,44 @@ docker compose down -v && docker compose up -d --build
 ./mvnw -pl <module> -am package -DskipTests && docker compose up -d --build <module>
 ```
 
-No test files exist yet. `spring-boot-starter-test`, WireMock and Testcontainers are on
-the classpath in the relevant modules, ready for when tests are added.
+### Tests
+
+93 unit tests, all green, **runnable fully offline** (`mvn -o -B test`) — no Docker, no
+network, no running stack. `spring-boot-starter-test` is inherited from the root
+`<dependencies>`, so JUnit 5 + AssertJ + Mockito are already on every module's test
+classpath; nothing needs adding to a module POM to write a test.
+
+```bash
+mvn -o -B test                       # whole reactor, offline
+mvn -o -B -pl tracker-service -am test   # one module -- -am is required, same as packaging
+```
+
+One caveat: `./mvnw` re-bootstraps Maven over the network under Git Bash, so use the
+installed `mvn` (see the PowerShell block below) when offline.
+
+Coverage is deliberately **narrow and deep** rather than broad: the five pure-logic units
+where correctness is actually arguable and a silent regression would produce confidently
+wrong output, not CRUD or wiring.
+
+| Test | Guards |
+|---|---|
+| `EmailClassifierTest` | rejection patterns checked **before** interview ones |
+| `ApplicationStatusTest` | legal/illegal transitions, terminal states, no self-transition |
+| `JobNormalizerTest` | dedup hash — collapses cross-board duplicates, keeps different cities apart |
+| `FitScoreServiceTest` | rarity weighting, `-1` re-normalisation, `UNASSESSABLE_SKILLS_SCORE_CAP` |
+| `ResumeSectionAnalyzerTest` | overlapping-date merge, experience-section scoping |
+
+**Every one of these was mutation-checked**: the rule it guards was temporarily inverted in
+the production code and the suite confirmed red, then reverted. This caught a test that
+looked right and was worthless — the headline "rejection beats interview" case used an
+email containing the *word* "interviewing" but matching no interview *pattern*, so it
+passed even with the two checks swapped. It now asserts the interview half classifies as
+INTERVIEWING **on its own** before asserting the whole email is REJECTED, so the fixture
+cannot silently stop exercising the ordering. Apply the same check to any new test over
+these rules; a green test proves nothing until you have seen it fail.
+
+WireMock and Testcontainers are on the classpath in the relevant modules but unused so far —
+integration tests against a real Postgres/Redis are the natural next layer.
 
 ### Windows/PowerShell environment note
 
