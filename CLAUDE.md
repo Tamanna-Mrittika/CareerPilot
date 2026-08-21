@@ -420,9 +420,74 @@ Two directories have needed this so far; check whichever the error names:
 
 The leftover `*-quarantine-*` / `*-broken-*` folders are zero-byte and harmless.
 
+**Killing the Windows-side `.exe` processes is sometimes not enough** (seen 2026-08-20):
+the WSL2 VM itself can still hold the socket handle even after every `docker*`/`com.docker.*`
+process is gone, so Docker Desktop crashes again on the very next start with the identical
+error. If moving the directory once does not stick, also run `wsl --shutdown` (fully stops
+the VM, confirm with `wsl --list --verbose` showing every distro `Stopped`) before moving
+the directory and relaunching.
+
 Also note: Docker Desktop does **not** auto-start after a reboot on this machine, and
 `docker info` *hangs* rather than erroring when it is mid-start or stuck -- poll with
 `timeout 8 docker version` so a stuck daemon cannot block the shell.
+
+## C: drive silently losing space to Docker's build cache (recurring)
+
+Every `docker compose up -d --build` leaves the previous build's intermediate layers
+behind in Docker's build cache -- it is never pruned automatically. Across a session with
+several `--build` redeploys (one per service touched) this reliably grows into double-digit
+GB and is the most likely explanation for the C: drive free space dropping sharply between
+sessions with no obvious new files anywhere. Diagnose with:
+
+```powershell
+docker system df -v   # look at the "Build Cache usage" total specifically
+```
+
+If it is large, reclaim it -- this only removes cached layers, never images, containers, or
+volumes (Postgres data included):
+
+```powershell
+docker builder prune -af
+```
+
+**That alone does not free C: drive space.** WSL2's virtual disk
+(`%LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx`) only grows, never shrinks on its own,
+even after the cache inside it is deleted -- Windows still reserves the old (larger) file
+size on disk. Reclaiming the actual space needs two steps, in this order, from an
+**elevated** PowerShell:
+
+```powershell
+# 1. With Docker Desktop running, trim the ext4 filesystem inside the WSL VM first.
+#    Skipping this step is why a first attempt at this may reclaim almost nothing --
+#    diskpart's compact only reclaims blocks NTFS sees as zeroed, and ext4 does not
+#    zero freed blocks on its own; fstrim is what actually does that.
+wsl -d docker-desktop -- fstrim -av
+
+# 2. Then shut the VM down and compact the now-trimmed vhdx. Paste this as a script file
+#    rather than typing it interactively into diskpart -- pasting a long line directly
+#    into diskpart's console reliably gets split at odd character-count boundaries
+#    (observed splitting mid-filename) and each fragment submits as a broken command.
+wsl --shutdown
+@'
+select vdisk file="C:\Users\ACER\AppData\Local\Docker\wsl\disk\docker_data.vhdx"
+attach vdisk readonly
+compact vdisk
+detach vdisk
+exit
+'@ | Out-File -FilePath "$env:TEMP\compact_docker.txt" -Encoding ascii
+diskpart /s "$env:TEMP\compact_docker.txt"
+```
+
+Verified 2026-08-20: build cache had grown to 20.4GB (of a 27.5GB vhdx); `builder prune`
+freed it inside Docker's own accounting, but the vhdx stayed 27.5GB until fstrim + compact
+ran, after which it dropped to 8.9GB -- matching the ~6.5GB of real images/containers/
+volumes almost exactly. C: free space recovered from 17.6GB to 35.7GB. A compact attempted
+*without* the fstrim step first only recovered about 1GB, not the full amount -- confirmed
+by trying it in that order first.
+
+After any of this, bring the stack back with `docker compose up -d` and, if it was running,
+`docker compose --profile observability up -d` -- a full `wsl --shutdown` stops every
+container, and they do not restart on their own.
 
 ## Housekeeping notes (machine-level, not project-level)
 
