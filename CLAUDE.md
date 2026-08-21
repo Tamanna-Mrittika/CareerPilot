@@ -129,7 +129,7 @@ pinned against Maven Central in the root `pom.xml`, not guessed). One `docker co
 runs the whole system.
 
 ```
-                     Browser (React / Vite, not started)
+                     Browser (React / Vite, port 5173, dev server only)
                               |
                     +---------v----------+
                     |    api-gateway     |   only application port on the host
@@ -168,7 +168,7 @@ actually exists; listing a missing directory fails the reactor before compiling 
 | resume-service | built, running | 8083 (internal) |
 | matching-service | built, running | 8085 (internal) |
 | tracker-service | built, running | 8086 (internal) |
-| frontend | **not started — next task** | — |
+| frontend | built, verified end-to-end against the live stack | 5173 (Vite dev server, not containerized) |
 
 ### Request path and trust boundary
 
@@ -633,6 +633,63 @@ wrong automatic move costs more trust than an absent one.
 Webhook responses are always 200 with a description, even when nothing matched -- returning
 an error for "no card moved" makes a mail provider retry the same message forever.
 
+### `frontend` — BUILT, Vite dev server on port 5173
+
+React 18 + TypeScript + Vite, not containerized (`cd frontend && npm install && npm run
+dev`, then open `http://localhost:5173`; it talks to the gateway at
+`http://localhost:8080` via `VITE_API_BASE_URL` in `.env`, CORS for `localhost:5173`
+already whitelisted in `api-gateway/.../application.yml`). Deliberately not part of the
+Maven reactor -- a plain sibling directory with its own `package.json`.
+
+The instructor doesn't grade this, but the user wanted a genuinely good one anyway so the
+backend work is actually demoable rather than proven only via raw API calls. Design
+direction (deliberately decided, not left generic): light "modern recruiting SaaS" look,
+Tailwind v4 (CSS-first `@theme`, no legacy config file), a small hand-built
+`components/ui/` library on bare Radix primitives rather than a full shadcn install. One
+recurring visual motif -- a circular `ScoreRing` -- is reused for every score the backend
+computes (job fit score, resume ATS score, skill-gap demand%), so the app's actual
+flagship feature (explainable scoring) reads as one consistent idea across pages instead
+of a bare number in different UIs each time.
+
+Screens: Dashboard; Profile (tabbed Basics/Education/Experience/Skills, taxonomy-backed
+skill picker, cover-letter PDF generation); Resume (upload → poll → ATS score breakdown,
+plus on-demand scoring against a picked job); **Jobs -- Local** and **Jobs -- Remote** as
+two separate routes (not a tab toggle -- kept distinct per an earlier explicit
+requirement that local/remote live on different pages), sourced from
+`/matches/local`/`/matches/remote` rather than the plain job list so the ranked fit score
+is the primary view, not a secondary click; Skill Gap; Tracker (Kanban, `@dnd-kit` drag
+constrained to each card's own `allowedTransitions` from the backend, plus an
+admin-only "simulate email" panel to demo the HMAC webhook's auto-transition live); System
+health (job-service's `/jobs/stats` as a live circuit-breaker grid -- deliberately not a
+full Eureka mirror, since Eureka's raw REST API isn't confirmed CORS-enabled for a
+`localhost:5173` origin and promising that live in a demo would be a bad bet).
+
+**Auth storage matches what the backend actually returns** -- there are no cookies
+anywhere in this stack (`AuthResponse` is plain JSON with `accessToken` +
+`refreshToken`). Access token lives in memory only; refresh token in `localStorage`. An
+axios response interceptor retries a 401 once via `/auth/refresh`, and every 401 that
+lands *while a refresh is already in flight* waits on that same promise rather than
+firing its own -- refresh-token rotation means a second concurrent refresh would revoke
+the first one's whole token family.
+
+**A real backend bug was found and fixed while testing this**: `resume-service`'s
+`SkillTaxonomyCache` had no `retryUntilLoaded()` safety net, unlike its sibling caches in
+matching-service (`SkillRarityIndex`, `JobCorpusIdfCache`), which already carry the fix
+for this exact class of cold-start Eureka race (see "Cold-start race" above). A resume
+uploaded in the ~30-minute window after a resume-service restart -- before profile-service
+had registered with Eureka on the *first* attempt -- got **zero extracted skills with no
+error anywhere**, confirmed live via a real upload. Fixed by adding the identical
+90-second `retryUntilLoaded()` pattern; re-verified the same upload then correctly
+extracted all 8 skills.
+
+Not done, deliberately: no dark mode (one theme executed well beats two done adequately);
+no code-splitting (671KB gzipped-to-207KB single bundle -- fine for a course demo, not
+worth the complexity here); mouse drag-and-drop on the Kanban board could not be verified
+in this environment's headless browser tool (no native file-picker or pixel-drag support),
+so a keyboard-and-click-accessible "Move to" selector was added to the card detail dialog
+as the verified, always-working path -- drag is a bonus interaction for mouse users on top
+of it, not the only way to change status.
+
 ### Cut list, in order, if the timeline gets tight
 
 1. LLM resume-feedback pass (already off by default — costs nothing to drop)
@@ -647,8 +704,6 @@ resume→match end-to-end. Those are the actual grade.
 
 ### Not started, lower priority
 
-- `tracker-service` (Kanban board, port TBD, schema already provisioned as `tracker`) —
-  see cut list, likely first to go if time is short
-- Frontend (React/Vite) — instructor doesn't grade this; keep minimal
 - `docs/` — C4-style diagrams + short ADRs justifying the architectural decisions above,
   useful for the viva/demo but not functional
+- k6 load test

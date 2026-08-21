@@ -1,0 +1,120 @@
+@import "tailwindcss";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Surfaces */
+  --color-app-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #f4f4f6;
+  --color-border: #e5e7eb;
+  --color-border-strong: #d1d5db;
+
+  /* Text */
+  --color-ink: #111827;
+  --color-ink-muted: #6b7280;
+  --color-ink-faint: #9ca3af;
+
+  /* Brand */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+
+  /* Semantic score bands -- the recurring ring/score motif */
+  --color-score-low: #e11d48;
+  --color-score-mid: #f59e0b;
+  --color-score-high: #10b981;
+
+  /* Status */
+  --color-danger: #e11d48;
+  --color-danger-bg: #fef1f3;
+  --color-warning: #f59e0b;
+  --color-warning-bg: #fffaeb;
+  --color-success: #10b981;
+  --color-success-bg: #ecfdf5;
+
+  --radius-card: 1rem;
+  --radius-control: 0.625rem;
+
+  --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.04), 0 1px 3px 0 rgb(0 0 0 / 0.06);
+  --shadow-card-hover: 0 4px 10px -2px rgb(17 24 39 / 0.08), 0 2px 4px -2px rgb(17 24 39 / 0.06);
+  --shadow-popover: 0 12px 32px -8px rgb(17 24 39 / 0.18), 0 4px 10px -4px rgb(17 24 39 / 0.1);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-app-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: var(--color-brand-100);
+    color: var(--color-brand-700);
+  }
+}
+
+@layer components {
+  @keyframes overlay-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes overlay-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+  @keyframes panel-in {
+    from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  }
+  @keyframes panel-out {
+    from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    to { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes toast-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+
+  .overlay-anim {
+    animation: overlay-in 150ms ease-out;
+    &[data-state='closed'] {
+      animation: overlay-out 120ms ease-in;
+    }
+  }
+
+  .panel-anim {
+    animation: panel-in 150ms ease-out;
+    &[data-state='closed'] {
+      animation: panel-out 120ms ease-in;
+    }
+  }
+
+  .toast-anim {
+    animation: toast-in 180ms ease-out;
+    &[data-state='closed'] {
+      animation: toast-out 120ms ease-in;
+    }
+  }
+}

@@ -45,6 +45,24 @@ public class SkillTaxonomyCache {
     }
 
     /**
+     * Retries quickly if the initial load raced profile-service's Eureka registration on a
+     * cold start of the whole stack (compose's {@code depends_on: service_healthy} waits for
+     * a healthcheck, not for service discovery, so this loses the first attempt reliably).
+     * Confirmed live 2026-08-21: a resume uploaded in the ~30-minute gap between a cold start
+     * and the next scheduled {@link #refresh()} got zero extracted skills with no error
+     * anywhere -- the exact "wrong answers, no error" failure this mirrors the fix for in
+     * matching-service's {@code SkillRarityIndex}/{@code JobCorpusIdfCache}, which this cache
+     * had been missing.
+     */
+    @Scheduled(fixedDelay = 90, initialDelay = 30, timeUnit = java.util.concurrent.TimeUnit.SECONDS)
+    public void retryUntilLoaded() {
+        if (isLoaded()) {
+            return;
+        }
+        refresh();
+    }
+
+    /**
      * Every 30 minutes: frequent enough that a taxonomy change (a rare event -- it only
      * happens on a migration) shows up the same day, infrequent enough that it is nowhere
      * near profile-service's own request volume.
