@@ -52,6 +52,14 @@ public class GatewaySecurityConfig {
                         // breaks the browser before the real request is ever attempted.
                         .pathMatchers(HttpMethod.OPTIONS).permitAll()
                         .pathMatchers(PUBLIC_PATHS).permitAll()
+                        // job-service's own SecurityConfig deliberately permits anonymous GET
+                        // browsing (a job board should not require login to search postings),
+                        // but that intent never reached the gateway: without this matcher the
+                        // edge rejected every unauthenticated job request before job-service
+                        // was ever asked, silently breaking the feature end to end. Scoped to
+                        // GET only so POST /api/v1/jobs/ingest still falls through to
+                        // anyExchange().authenticated() plus its ADMIN-only @PreAuthorize.
+                        .pathMatchers(HttpMethod.GET, "/api/v1/jobs/**").permitAll()
                         .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> {
                 }));

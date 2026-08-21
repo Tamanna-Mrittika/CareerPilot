@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -54,6 +55,23 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConstraintViolationException.class)
     public ProblemDetail handleConstraintViolation(ConstraintViolationException ex) {
         return problem(HttpStatus.BAD_REQUEST, "Validation failed", ex.getMessage(), "validation-error");
+    }
+
+    /**
+     * Thrown when Jackson can't deserialize the request body at all -- an invalid enum
+     * value, a wrong-typed field, or malformed JSON syntax. Without this handler it fell
+     * through to {@link #handleUnexpected}, returning 500 for what is really a client
+     * mistake: the wrong status code, and indistinguishable from a genuine bug in logs and
+     * alerting. The underlying Jackson message is not client-facing (it can be an
+     * intimidating wall of type/path detail), so this responds with the same generic
+     * validation-error shape every other bad-input case already uses.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handleUnreadable(HttpMessageNotReadableException ex) {
+        log.warn("Malformed request body: {}", ex.getMessage());
+        return problem(HttpStatus.BAD_REQUEST, "Validation failed",
+                "The request body is missing, malformed, or contains an invalid value",
+                "validation-error");
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)

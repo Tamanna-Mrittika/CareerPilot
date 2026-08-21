@@ -186,6 +186,34 @@ key (ephemeral dev keypair by default with a loud startup warning; `scripts/gene
 **family-based reuse detection**: presenting an already-rotated token revokes the whole
 token family, not just that token.
 
+**Gateway public-path bug (found by a QA pass, fixed 2026-08-21):** `job-service`'s own
+`SecurityConfig` deliberately permits anonymous `GET /api/v1/jobs/**` (a job board
+shouldn't require login to browse), but the gateway enforces its *own*, separate edge-level
+check first, and its `PUBLIC_PATHS` list never had a matching entry -- so every
+unauthenticated job-browsing request was rejected with 401 at the edge, before job-service
+was ever asked. Confirmed by hitting job-service directly on the internal Docker network
+(200, real data) versus through the gateway (401). The frontend never caught this because
+it always calls the authenticated `/matches/**` endpoints, not the plain public job list.
+Fixed with a method-scoped matcher in `GatewaySecurityConfig`:
+`.pathMatchers(HttpMethod.GET, "/api/v1/jobs/**").permitAll()`, placed before
+`anyExchange().authenticated()` and scoped to `GET` only so `POST /api/v1/jobs/ingest`
+still requires the JWT + ADMIN role it already has.
+
+**Refresh-token family revocation was silently rolled back (found and fixed 2026-08-21):**
+replaying an already-rotated refresh token was correctly rejected with 401, but the
+"revoke the whole family" side effect never actually persisted -- verified by inspecting
+`refresh_token` rows directly after a full replay sequence. Root cause: the revocation ran
+inside the same `@Transactional` scope as the caller (`AuthService.refresh()`), which
+immediately throws to report the failed replay; Spring's default rollback-on-unchecked-
+exception then undid the revocation along with everything else. The first fix attempt
+called a same-class `@Transactional(REQUIRES_NEW)` method from within `consume()` and
+*still* didn't work, for the same reason `JobPersistenceService`/`ResumeProcessingService`
+are separate beans elsewhere in this codebase: a same-class call bypasses the Spring proxy
+entirely, silently ignoring the propagation setting. The real fix needed a genuinely
+separate bean, `TokenFamilyRevoker`, so the call actually goes through a proxy and commits
+independently of the caller's later rollback. Re-verified via the same DB-trace method:
+both tokens in the family now show `revoked_at` populated after a detected replay.
+
 ### `careerpilot-common`
 
 Infrastructure only — JWT/JWKS resource-server config, correlation-ID propagation, RFC 7807
@@ -197,6 +225,17 @@ distributed monolith. Auto-configured via
 service gets correlation IDs and RFC 7807 errors just by depending on it — no manual
 wiring. Scoped to servlet apps only (`api-gateway` is reactive/WebFlux and supplies its own
 equivalents in `api-gateway/.../filter/`).
+
+**Malformed input returned 500, not 400 (found by a QA pass, fixed 2026-08-21):**
+`GlobalExceptionHandler` had no handler for `HttpMessageNotReadableException` -- thrown
+when Jackson can't deserialize the request body at all (an invalid enum value, or broken
+JSON syntax) -- so it fell through to the catch-all `Exception` handler and returned an
+opaque 500, indistinguishable in logs from a genuine bug. Reproduced identically in
+profile-service and tracker-service, confirming it was a shared-library gap rather than
+one service's mistake. Fixed by adding `@ExceptionHandler(HttpMessageNotReadableException
+.class)`, mapped to the same 400 `validation-error` shape every other bad-input case
+already uses. Since this lives in `careerpilot-common`, every servlet-based service picked
+up the fix by rebuilding the reactor once.
 
 ### Database: schema-per-service, one Postgres instance
 

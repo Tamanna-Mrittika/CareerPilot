@@ -37,6 +37,7 @@ public class RefreshTokenService {
 
     private final RefreshTokenRepository repository;
     private final JwtProperties properties;
+    private final TokenFamilyRevoker familyRevoker;
 
     /** Starts a brand-new family (a fresh login). */
     @Transactional
@@ -71,7 +72,11 @@ public class RefreshTokenService {
             // Already-rotated token replayed: assume compromise and cut off the whole family.
             log.warn("Refresh token reuse detected for user {} (family {}); revoking family",
                     token.getUserId(), token.getFamilyId());
-            repository.revokeFamily(token.getFamilyId(), Instant.now());
+            // Through the TokenFamilyRevoker bean, not a local method -- see its javadoc:
+            // a same-class call here would bypass the transactional proxy and this revoke
+            // would be silently rolled back along with everything else once the caller
+            // throws to report the failed replay.
+            familyRevoker.revokeIndependently(token.getFamilyId());
             return Optional.empty();
         }
 
